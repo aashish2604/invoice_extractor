@@ -1,7 +1,21 @@
 const convertJSONtoCSV = require('./json_to_csv_converter');
 
 // This function tackles the edge case of very large address elements
-function parseBusinessAddress(address){
+function parseBusinessAddress(input){
+    let indexOfminusSign;
+    for(let i=0;i<input.length;i++){
+        if(input[i]==="-"){
+            indexOfminusSign=i;
+            break;
+        }
+    }
+    let issueDateString=input.substring(indexOfminusSign-2,indexOfminusSign+8);
+    let dateParts=issueDateString.split("-");
+    let issueDate=new Date(dateParts[2], (dateParts[1] - 1), dateParts[0]);
+
+    let substring1=input.substring(0,indexOfminusSign-2);
+    let substring2=input.substring(indexOfminusSign+8);
+    let address=substring1+substring2;
 
     let splittedArray=address.split(",");
 
@@ -22,39 +36,37 @@ function parseBusinessAddress(address){
         "street": splittedArray[0].trim(),
         "city": splittedArray[1].trim(),
         "country": state+", "+country,
-        "zipcode": zipcode
+        "zipcode": zipcode,
+        "issueDate": issueDate
     };
 
     return responseJson;
 }
 
 
-function parseInvoiceDetails(data){
-    let unparsedIssueDate=data.pop().trim();
-    let parsedIssueDate=new Date(unparsedIssueDate);
-    
-    //I am not using array indexes directly for invoice number to tackle
-    // the edge case of exceptionally long invoice number (like a 4 line invoice number)
-    
-    let leftoverString="";
-    for(i in data){
-        let size=data[i].length;
-        if(data[i][size-2]==='#')
-        leftoverString+=data[i];
-        else
-        leftoverString+=data[i].trim();
-    }
-    leftoverString=leftoverString.substring(9).trim();
-    let invoiceNumber= leftoverString.replace("Issue date","").trim();
-
-    return {
-        "issuedDate": parsedIssueDate,
-        "invoiceNumber": invoiceNumber
-    };
+function getInvoiceNumber(data,bussinessName){
+    data=data.replace(bussinessName,"");
+    data=data.replace("Invoice#","");
+    data=data.replace("Issue date","");
+    return data.trim();
 }
 
 
-function parseCustomerDetails(data){
+function parseBillToAndDetails(data){
+    let ind=0;
+    while(ind<data.length){
+        let str=data[ind];
+        if(str[3]==="-" && str[7]==="-")
+        break;
+        ind++;
+    }
+    ind+=3;
+
+    let invoiceDescription="";
+    for(let j=data.length-1;j>=ind;j--){
+        invoiceDescription=data.pop()+invoiceDescription;
+    }
+
     let addressLine2=data.pop().trim();
     let addressLine1=data.pop().trim();
     let phoneNumer=data.pop().trim();
@@ -80,10 +92,25 @@ function parseCustomerDetails(data){
         "email": email.trim(),
         "phoneNo": phoneNumer,
         "addressLine1": addressLine1,
-        "addressLine2": addressLine2
+        "addressLine2": addressLine2,
+        "invoiceDescription": invoiceDescription.trim()
     }
 }
 
+function parseBillItemDetails(data){
+    let i=0;
+    let billItemDetailsJson=[];
+    while(i<data.length){
+        let currentItemData={
+            "Invoice__BillDetails__Name": data[i].trim(),
+            "Invoice__BillDetails__Quantity": Number(data[i+1].trim()),
+            "Invoice__BillDetails__Rate": Number(data[i+2].trim())
+        }
+        billItemDetailsJson.push(currentItemData);
+        i+=4;
+    }
+    return billItemDetailsJson;
+}
 
 
 
@@ -107,9 +134,10 @@ class Parser{
         let arialMtBetweenTitleTable=[];
         let invoiceDueDate;
         let itemTableData=[];
-        let tax;
+        let invoiceTax;
+        let invoiceNumber;
 
-
+        // Index representing traversal position
         let i=0;
 
         // move until we reach title
@@ -127,12 +155,13 @@ class Parser{
 
         // searching for bussiness decription
         while(i<json.elements.length){
-            if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT") break;
+            if(json.elements[i].Text === "BILL TO ") break;
+            if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT"){
+                businessDescription=json.elements[i].Text;
+            }
             i++;
         }
-
-        businessDescription=json.elements[i].Text.trim();
-        i++;
+        businessDescription=businessDescription.trim();
 
         while(i<json.elements.length){
             if(json.elements[i].Text === "AMOUNT ") break;
@@ -155,73 +184,57 @@ class Parser{
             i++;
         }
         itemTableData.pop();
-        tax=Number(itemTableData.pop());
+        invoiceTax=Number(itemTableData.pop());
         itemTableData.pop();
 
+        invoiceNumber=getInvoiceNumber(arialBeforeTitle,businessName);
+
+        let parsedBusinessAddress=parseBusinessAddress(arialMtBeforeTitle);
+        let parsedBillToAndDetails=parseBillToAndDetails(arialMtBetweenTitleTable);
+        let parsedBillItemDetails=parseBillItemDetails(itemTableData);
 
 
+        // Contains data for all the fields before the item wise bill details of invoice
+        let responseFragment1={
+          bussiness_city: parsedBusinessAddress.city,
+          bussiness_country: parsedBusinessAddress.country,
+          businessDescription: businessDescription,
+          businessName: businessName,
+          business_street: parsedBusinessAddress.street,
+          business_zipcode: parsedBusinessAddress.zipcode,
+          customerAddressLine1: parsedBillToAndDetails.addressLine1,
+          customerAddressLine2: parsedBillToAndDetails.addressLine2,
+          customerEmail: parsedBillToAndDetails.email,
+          customerName: parsedBillToAndDetails.name,
+          customerPhoneNo: parsedBillToAndDetails.phoneNo,
+        }
 
-        console.log(arialBeforeTitle);
-        console.log(arialMtBeforeTitle);
-        console.log(businessName);
-        console.log(businessDescription);
-        console.log(invoiceDueDate);
-        console.log(arialMtBetweenTitleTable);
-        console.log(tax);
-        console.log(itemTableData);
+        // Contains data for all the fields after the item wise bill details of invoice 
+        let responesFragment2={
+          invoiceDescription: parsedBillToAndDetails.invoiceDescription,
+          invoiceDueDate: invoiceDueDate,
+          invoiceIssueDate: parsedBusinessAddress.issueDate,
+          invoiceNumber: invoiceNumber,
+          invoiceTax: invoiceTax,
+        }
 
+        // NOTE: The fragments above are the properties common for all the items in the invoice
 
-
-
-        
-        // // Business address details in JSON format
-        // let parsedBusinessAddress=parseBusinessAddress(businessAddress);
-        // // Invoice details excluding item specific properties in JSON format
-        // let parsedInvoiceDetails=parseInvoiceDetails(invoiceIssueDetails);
-        // // Customer details in JSON format
-        // let parsedCustomerDetails=parseCustomerDetails(customerDetails);
-        
-        // // Contains data for all the fields before the item wise bill details of invoice
-        // let responseFragment1={
-        //   bussiness_city: parsedBusinessAddress.city,
-        //   bussiness_country: parsedBusinessAddress.country,
-        //   businessDescription: businessDescription,
-        //   businessName: businessName,
-        //   business_street: parsedBusinessAddress.street,
-        //   business_zipcode: parsedBusinessAddress.zipcode,
-        //   customerAddressLine1: parsedCustomerDetails.addressLine1,
-        //   customerAddressLine2: parsedCustomerDetails.addressLine2,
-        //   customerEmail: parsedCustomerDetails.email,
-        //   customerName: parsedCustomerDetails.name,
-        //   customerPhoneNo: parsedCustomerDetails.phoneNo,
-        // }
-
-        // // Contains data for all the fields after the item wise bill details of invoice 
-        // let responesFragment2={
-        //   invoiceDescription: invoiceDescription,
-        //   invoiceDueDate: invoiceDueDate,
-        //   invoiceIssueDate: parsedInvoiceDetails.issuedDate,
-        //   invoiceNumber: parsedInvoiceDetails.invoiceNumber,
-        //   invoiceTax: invoiceTax,
-        // }
-
-        // // NOTE: The fragments above are the properties common for all the items in the invoice
-
-        // // Merging fragment1 and fragment2 with the item property in the fashion
-        // // fragment1 + itemPropery('element' in this case) + fragment2
-        // invoiceBillDetails.forEach(element => {
-        //     let indivdualItemResponse={
-        //         ...responseFragment1,
-        //         ...element,
-        //         ...responesFragment2
-        //     };
-        //     this.collectiveParsedReponse.push(indivdualItemResponse);
-        // });
+        // Merging fragment1 and fragment2 with the item property in the fashion
+        // fragment1 + itemPropery('element' in this case) + fragment2
+        parsedBillItemDetails.forEach(element => {
+            let indivdualItemResponse={
+                ...responseFragment1,
+                ...element,
+                ...responesFragment2
+            };
+            this.collectiveParsedReponse.push(indivdualItemResponse);
+        });
     }
 
 }
 
-// module.exports = Parser;
+module.exports = Parser;
 
 
 
@@ -236,8 +249,8 @@ const jsonData = {
         "table_structure": "5"
     },
     "extended_metadata": {
-        "ID_instance": "90 71 C1 54 3D B7 B2 11 0A 00 67 45 8B 6B C6 23 ",
-        "ID_permanent": "34 35 20 37 33 20 42 39 20 35 34 20 33 44 20 42 37 20 42 32 20 31 31 20 30 41 20 30 30 20 36 37 20 34 35 20 38 42 20 36 42 20 43 36 20 32 33 20 ",
+        "ID_instance": "49 30 BC 7D 3B B7 B2 11 0A 00 67 45 8B 6B C6 23 ",
+        "ID_permanent": "42 44 20 36 43 20 42 38 20 37 44 20 33 42 20 42 37 20 42 32 20 31 31 20 30 41 20 30 30 20 36 37 20 34 35 20 38 42 20 36 42 20 43 36 20 32 33 20 ",
         "pdf_version": "1.6",
         "pdfa_compliance_level": "",
         "is_encrypted": false,
@@ -272,7 +285,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
@@ -304,7 +317,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -338,7 +351,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -372,7 +385,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -387,13 +400,13 @@ const jsonData = {
         },
         {
             "Bounds": [
-                336.07000732421875,
+                340.05999755859375,
                 708.1132049560547,
                 543.2117614746094,
                 730.5582427978516
             ],
             "ClipBounds": [
-                336.07000732421875,
+                340.05999755859375,
                 708.1132049560547,
                 543.2117614746094,
                 730.5582427978516
@@ -406,7 +419,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
@@ -414,7 +427,7 @@ const jsonData = {
             "Lang": "en",
             "Page": 0,
             "Path": "//Document/Sect/P[3]",
-            "Text": "Invoice# FR872290774839BQSM7IYG2JL13 Issue date ",
+            "Text": "Invoice# PL77678066447653534291577565 Issue date ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 13,
@@ -442,7 +455,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -454,7 +467,7 @@ const jsonData = {
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125,
-                "SpaceAfter": 12.625,
+                "SpaceAfter": 8.125,
                 "TextAlign": "End"
             }
         },
@@ -479,7 +492,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -515,7 +528,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
@@ -550,7 +563,7 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
@@ -565,13 +578,13 @@ const jsonData = {
             "Bounds": [
                 81.04800415039062,
                 567.6631927490234,
-                143.38272094726562,
+                155.27711486816406,
                 577.1182403564453
             ],
             "ClipBounds": [
                 81.04800415039062,
                 567.6631927490234,
-                143.38272094726562,
+                155.27711486816406,
                 577.1182403564453
             ],
             "Font": {
@@ -582,14 +595,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub",
-            "Text": "Willis Koelpin ",
+            "Text": "Garry Hegmann ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -599,13 +612,13 @@ const jsonData = {
             "Bounds": [
                 81.04800415039062,
                 554.6831970214844,
-                202.37088012695312,
+                207.05807495117188,
                 564.1382446289062
             ],
             "ClipBounds": [
                 81.04800415039062,
                 554.6831970214844,
-                202.37088012695312,
+                207.05807495117188,
                 564.1382446289062
             ],
             "Font": {
@@ -616,14 +629,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub[2]",
-            "Text": "Willis_Koelpin4@yahoo.co ",
+            "Text": "Garry_Hegmann59@hotma ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -633,13 +646,13 @@ const jsonData = {
             "Bounds": [
                 81.04800415039062,
                 541.3632049560547,
-                92.24681091308594,
+                110.21943664550781,
                 550.8182373046875
             ],
             "ClipBounds": [
                 81.04800415039062,
                 541.3632049560547,
-                92.24681091308594,
+                110.21943664550781,
                 550.8182373046875
             ],
             "Font": {
@@ -650,14 +663,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub[3]",
-            "Text": "m ",
+            "Text": "il.com ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -684,14 +697,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub[4]",
-            "Text": "783-402-5895 ",
+            "Text": "750-257-9345 ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -701,13 +714,13 @@ const jsonData = {
             "Bounds": [
                 81.04800415039062,
                 514.7232055664062,
-                158.63375854492188,
+                161.7283172607422,
                 524.1782379150391
             ],
             "ClipBounds": [
                 81.04800415039062,
                 514.7232055664062,
-                158.63375854492188,
+                161.7283172607422,
                 524.1782379150391
             ],
             "Font": {
@@ -718,14 +731,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub[5]",
-            "Text": "353 Cara Shoals ",
+            "Text": "9874 Bayer Road ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -735,13 +748,13 @@ const jsonData = {
             "Bounds": [
                 81.04800415039062,
                 501.7431945800781,
-                125.04719543457031,
+                121.08575439453125,
                 511.1982421875
             ],
             "ClipBounds": [
                 81.04800415039062,
                 501.7431945800781,
-                125.04719543457031,
+                121.08575439453125,
                 511.1982421875
             ],
             "Font": {
@@ -752,14 +765,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Page": 0,
             "Path": "//Document/Sect[2]/P/Sub[6]",
-            "Text": "Suchitlán ",
+            "Text": "Le Hocq ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "Placement": "Block"
@@ -768,293 +781,207 @@ const jsonData = {
         {
             "Bounds": [
                 240.25999450683594,
-                514.7232055664062,
-                513.0480804443359,
+                580.9832000732422,
+                286.1240692138672,
                 590.438232421875
             ],
             "ClipBounds": [
                 240.25999450683594,
-                514.7232055664062,
-                513.0480804443359,
+                580.9832000732422,
+                286.1240692138672,
                 590.438232421875
             ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "UAHNCK+Arial-BoldMT",
+                "subset": true,
+                "weight": 700
+            },
+            "HasClip": true,
+            "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table",
+            "Path": "//Document/Sect[3]/H1",
+            "Text": "DETAILS ",
+            "TextSize": 10.080001831054688
+        },
+        {
+            "Bounds": [
+                240.25999450683594,
+                567.6631927490234,
+                283.88623046875,
+                577.1182403564453
+            ],
+            "ClipBounds": [
+                240.25999450683594,
+                567.6631927490234,
+                283.88623046875,
+                577.1182403564453
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "it",
+            "Page": 0,
+            "Path": "//Document/Sect[3]/P",
+            "Text": "aliqua eu ",
+            "TextSize": 10.080001831054688,
             "attributes": {
-                "BBox": [
-                    240.22999999999593,
-                    514.6909999999916,
-                    558.2169999999751,
-                    588.9679999999935
-                ],
-                "NumCol": 2,
-                "NumRow": 2,
-                "Placement": "Block",
+                "SpaceAfter": -12.125
+            }
+        },
+        {
+            "Bounds": [
+                283.7552032470703,
+                567.6631927490234,
+                349.4263916015625,
+                577.1182403564453
+            ],
+            "ClipBounds": [
+                283.7552032470703,
+                567.6631927490234,
+                349.4263916015625,
+                577.1182403564453
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[3]/P[2]",
+            "Text": "Lorem sit sunt ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125,
+                "TextAlign": "Center"
+            }
+        },
+        {
+            "Bounds": [
+                240.25999450683594,
+                554.6831970214844,
+                314.90240478515625,
+                564.1382446289062
+            ],
+            "ClipBounds": [
+                240.25999450683594,
+                554.6831970214844,
+                314.90240478515625,
+                564.1382446289062
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[3]/P[3]",
+            "Text": "cillum veniam et ",
+            "TextSize": 10.080001831054688
+        },
+        {
+            "Bounds": [
+                412.8000030517578,
+                580.9832000732422,
+                464.58103942871094,
+                590.438232421875
+            ],
+            "ClipBounds": [
+                412.8000030517578,
+                580.9832000732422,
+                464.58103942871094,
+                590.438232421875
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "UAHNCK+Arial-BoldMT",
+                "subset": true,
+                "weight": 700
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/H1",
+            "Text": "PAYMENT ",
+            "TextSize": 10.080001831054688
+        },
+        {
+            "Bounds": [
+                412.8000030517578,
+                567.6631927490234,
+                513.0480804443359,
+                577.1182403564453
+            ],
+            "ClipBounds": [
+                412.8000030517578,
+                567.6631927490234,
+                513.0480804443359,
+                577.1182403564453
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/P",
+            "Text": "Due date: 16-06-2023 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
                 "SpaceAfter": 18
             }
         },
         {
             "Bounds": [
-                240.25999450683594,
-                580.9832000732422,
-                286.1240692138672,
-                590.438232421875
-            ],
-            "ClipBounds": [
-                240.25999450683594,
-                580.9832000732422,
-                286.1240692138672,
-                590.438232421875
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR/TH",
-            "attributes": {
-                "BBox": [
-                    240.22999999999593,
-                    579.6089999999967,
-                    403.903999999995,
-                    588.9679999999935
-                ],
-                "BlockAlign": "Before",
-                "ColIndex": 0,
-                "Height": 9.375,
-                "InlineAlign": "Start",
-                "RowIndex": 0,
-                "Width": 163.625
-            }
-        },
-        {
-            "Bounds": [
-                240.25999450683594,
-                580.9832000732422,
-                286.1240692138672,
-                590.438232421875
-            ],
-            "ClipBounds": [
-                240.25999450683594,
-                580.9832000732422,
-                286.1240692138672,
-                590.438232421875
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
-                "subset": true,
-                "weight": 700
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR/TH/P",
-            "Text": "DETAILS ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                412.8000030517578,
-                580.9832000732422,
-                464.58103942871094,
-                590.438232421875
-            ],
-            "ClipBounds": [
-                412.8000030517578,
-                580.9832000732422,
-                464.58103942871094,
-                590.438232421875
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR/TH[2]",
-            "attributes": {
-                "BBox": [
-                    403.903999999995,
-                    579.6089999999967,
-                    558.2169999999751,
-                    588.9679999999935
-                ],
-                "BlockAlign": "Before",
-                "ColIndex": 1,
-                "Height": 9.375,
-                "InlineAlign": "Start",
-                "RowIndex": 0,
-                "Width": 154.375
-            }
-        },
-        {
-            "Bounds": [
-                412.8000030517578,
-                580.9832000732422,
-                464.58103942871094,
-                590.438232421875
-            ],
-            "ClipBounds": [
-                412.8000030517578,
-                580.9832000732422,
-                464.58103942871094,
-                590.438232421875
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
-                "subset": true,
-                "weight": 700
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR/TH[2]/P",
-            "Text": "PAYMENT ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                240.25999450683594,
-                514.7232055664062,
-                368.3263244628906,
-                577.1182403564453
-            ],
-            "ClipBounds": [
-                240.25999450683594,
-                514.7232055664062,
-                368.3263244628906,
-                577.1182403564453
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR[2]/TD",
-            "attributes": {
-                "BBox": [
-                    240.22999999999593,
-                    514.6909999999916,
-                    403.903999999995,
-                    579.6089999999967
-                ],
-                "BlockAlign": "After",
-                "ColIndex": 0,
-                "Height": 64.875,
-                "InlineAlign": "Start",
-                "RowIndex": 1,
-                "Width": 163.625
-            }
-        },
-        {
-            "Bounds": [
-                240.25999450683594,
-                514.7232055664062,
-                368.3263244628906,
-                577.1182403564453
-            ],
-            "ClipBounds": [
-                240.25999450683594,
-                514.7232055664062,
-                368.3263244628906,
-                577.1182403564453
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR[2]/TD/P",
-            "Text": "tempor tempor mollit tempor id occaecat consequat id pariatur nulla ullamco deserunt non fugiat consectetur fugiat ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 13.25
-            }
-        },
-        {
-            "Bounds": [
-                410.63999938964844,
-                535.3764038085938,
-                513.0480804443359,
-                577.1182403564453
-            ],
-            "ClipBounds": [
-                410.63999938964844,
-                535.3764038085938,
-                513.0480804443359,
-                577.1182403564453
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR[2]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    403.903999999995,
-                    514.6909999999916,
-                    558.2169999999751,
-                    579.6089999999967
-                ],
-                "BlockAlign": "Before",
-                "ColIndex": 1,
-                "Height": 64.875,
-                "InlineAlign": "Start",
-                "RowIndex": 1,
-                "Width": 154.375
-            }
-        },
-        {
-            "Bounds": [
-                412.8000030517578,
-                567.6631927490234,
-                513.0480804443359,
-                577.1182403564453
-            ],
-            "ClipBounds": [
-                412.8000030517578,
-                567.6631927490234,
-                513.0480804443359,
-                577.1182403564453
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR[2]/TD[2]/P",
-            "Text": "Due date: 18-06-2023 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
                 410.63999938964844,
                 535.3764038085938,
                 459.87107849121094,
@@ -1074,18 +1001,18 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table/TR[2]/TD[2]/P[2]",
-            "Text": "$21161.8 ",
+            "Path": "//Document/Sect[4]/Aside/P",
+            "Text": "$41610.8 ",
             "TextSize": 11.160003662109375,
             "attributes": {
-                "LineHeight": 13.375
+                "SpaceAfter": 18
             }
         },
         {
@@ -1102,7 +1029,7 @@ const jsonData = {
                 439.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]",
+            "Path": "//Document/Sect[4]/Table",
             "attributes": {
                 "BBox": [
                     71.5170999999973,
@@ -1129,46 +1056,34 @@ const jsonData = {
                 439.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD",
+            "Path": "//Document/Sect[4]/Table/TR/TD",
             "attributes": {
                 "BBox": [
                     71.5170999999973,
-                    413.8949999999895,
+                    414.13499999999476,
                     358.78499999998894,
                     447.73399999999674
                 ],
                 "BlockAlign": "Middle",
                 "BorderColor": [
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0.6235349999999755,
-                        0.6235349999999755,
-                        0.6235349999999755
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ]
+                    0,
+                    0,
+                    0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Solid",
+                    "Double",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
-                    0.875,
+                    0.625,
                     0.5,
                     0.25
                 ],
                 "ColIndex": 0,
-                "Height": 33.875,
+                "Height": 33.625,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 287.25
@@ -1195,14 +1110,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD/P",
+            "Path": "//Document/Sect[4]/Table/TR/TD/P",
             "Text": "ITEM ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -1223,46 +1138,34 @@ const jsonData = {
                 439.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[2]",
+            "Path": "//Document/Sect[4]/Table/TR/TD[2]",
             "attributes": {
                 "BBox": [
                     358.304999999993,
-                    413.8949999999895,
+                    414.13499999999476,
                     415.6629999999859,
                     447.73399999999674
                 ],
                 "BlockAlign": "Middle",
                 "BorderColor": [
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0.6235349999999755,
-                        0.6235349999999755,
-                        0.6235349999999755
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ]
+                    0,
+                    0,
+                    0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Solid",
+                    "Double",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
-                    0.875,
+                    0.625,
                     0.25,
                     0.25
                 ],
                 "ColIndex": 1,
-                "Height": 33.875,
+                "Height": 33.625,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 57.375
@@ -1289,14 +1192,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[2]/P",
+            "Path": "//Document/Sect[4]/Table/TR/TD[2]/P",
             "Text": "QTY ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -1317,46 +1220,34 @@ const jsonData = {
                 439.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[3]",
+            "Path": "//Document/Sect[4]/Table/TR/TD[3]",
             "attributes": {
                 "BBox": [
                     415.18299999999,
-                    413.8949999999895,
+                    414.13499999999476,
                     481.8999999999942,
                     447.73399999999674
                 ],
                 "BlockAlign": "Middle",
                 "BorderColor": [
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0.6235349999999755,
-                        0.6235349999999755,
-                        0.6235349999999755
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ]
+                    0,
+                    0,
+                    0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Solid",
+                    "Double",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
-                    0.875,
+                    0.625,
                     0.25,
                     0.25
                 ],
                 "ColIndex": 2,
-                "Height": 33.875,
+                "Height": 33.625,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 66.75
@@ -1383,14 +1274,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[3]/P",
+            "Path": "//Document/Sect[4]/Table/TR/TD[3]/P",
             "Text": "RATE ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -1411,46 +1302,34 @@ const jsonData = {
                 439.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[4]",
+            "Path": "//Document/Sect[4]/Table/TR/TD[4]",
             "attributes": {
                 "BBox": [
                     481.41999999999825,
-                    413.8949999999895,
+                    414.13499999999476,
                     541.417999999976,
                     447.73399999999674
                 ],
                 "BlockAlign": "Middle",
                 "BorderColor": [
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0.6235349999999755,
-                        0.6235349999999755,
-                        0.6235349999999755
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ],
-                    [
-                        0,
-                        0,
-                        0
-                    ]
+                    0,
+                    0,
+                    0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Solid",
+                    "Double",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
-                    0.875,
+                    0.625,
                     0.25,
                     0.5
                 ],
                 "ColIndex": 3,
-                "Height": 33.875,
+                "Height": 33.625,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 60
@@ -1477,14 +1356,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[2]/TR/TD[4]/P",
+            "Path": "//Document/Sect[4]/Table/TR/TD[4]/P",
             "Text": "AMOUNT ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -1494,27 +1373,27 @@ const jsonData = {
         {
             "Bounds": [
                 77.447998046875,
-                193.0731964111328,
+                159.59320068359375,
                 517.7280731201172,
                 403.50823974609375
             ],
             "ClipBounds": [
                 77.447998046875,
-                193.0731964111328,
+                159.59320068359375,
                 517.7280731201172,
                 403.50823974609375
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]",
+            "Path": "//Document/Sect[4]/Table[2]",
             "attributes": {
                 "BBox": [
                     71.5170999999973,
-                    175.70499999999447,
+                    142.34599999999773,
                     540.9379999999946,
                     411.97499999999127
                 ],
                 "NumCol": 4,
-                "NumRow": 7,
+                "NumRow": 8,
                 "Placement": "Block",
                 "SpaceAfter": 18
             }
@@ -1523,31 +1402,36 @@ const jsonData = {
             "Bounds": [
                 77.447998046875,
                 394.05320739746094,
-                181.5038299560547,
+                194.80943298339844,
                 403.50823974609375
             ],
             "ClipBounds": [
                 77.447998046875,
                 394.05320739746094,
-                181.5038299560547,
+                194.80943298339844,
                 403.50823974609375
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD",
             "attributes": {
                 "BBox": [
                     71.5170999999973,
-                    376.33699999999953,
+                    377.7769999999873,
                     358.0649999999878,
                     411.97499999999127
                 ],
-                "BlockAlign": "Before",
+                "BlockAlign": "Middle",
                 "BorderColor": [
                     0,
                     0,
                     0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Double",
+                    "Solid",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
                     0.25,
@@ -1555,7 +1439,7 @@ const jsonData = {
                     0.25
                 ],
                 "ColIndex": 0,
-                "Height": 35.625,
+                "Height": 34.25,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 286.375
@@ -1565,13 +1449,13 @@ const jsonData = {
             "Bounds": [
                 77.447998046875,
                 394.05320739746094,
-                181.5038299560547,
+                194.80943298339844,
                 403.50823974609375
             ],
             "ClipBounds": [
                 77.447998046875,
                 394.05320739746094,
-                181.5038299560547,
+                194.80943298339844,
                 403.50823974609375
             ],
             "Font": {
@@ -1582,15 +1466,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD/P",
-            "Text": "Ergonomic Metal Soap ",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD/P",
+            "Text": "Handmade Concrete Bike ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -1610,21 +1494,26 @@ const jsonData = {
                 403.50823974609375
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[2]",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[2]",
             "attributes": {
                 "BBox": [
                     357.58499999999185,
-                    376.33699999999953,
+                    377.7769999999873,
                     414.22299999999814,
                     411.97499999999127
                 ],
-                "BlockAlign": "Before",
+                "BlockAlign": "Middle",
                 "BorderColor": [
                     0,
                     0,
                     0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Double",
+                    "Solid",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
                     0.25,
@@ -1632,7 +1521,7 @@ const jsonData = {
                     0.25
                 ],
                 "ColIndex": 1,
-                "Height": 35.625,
+                "Height": 34.25,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 56.625
@@ -1659,15 +1548,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[2]/P",
-            "Text": "73 ",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[2]/P",
+            "Text": "47 ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -1687,21 +1576,26 @@ const jsonData = {
                 403.50823974609375
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[3]",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[3]",
             "attributes": {
                 "BBox": [
                     413.74299999998766,
-                    376.33699999999953,
+                    377.7769999999873,
                     481.8999999999942,
                     411.97499999999127
                 ],
-                "BlockAlign": "Before",
+                "BlockAlign": "Middle",
                 "BorderColor": [
                     0,
                     0,
                     0
                 ],
-                "BorderStyle": "Solid",
+                "BorderStyle": [
+                    "Double",
+                    "Solid",
+                    "Solid",
+                    "Solid"
+                ],
                 "BorderThickness": [
                     0.625,
                     0.25,
@@ -1709,7 +1603,7 @@ const jsonData = {
                     0.25
                 ],
                 "ColIndex": 2,
-                "Height": 35.625,
+                "Height": 34.25,
                 "InlineAlign": "Start",
                 "RowIndex": 0,
                 "Width": 68.125
@@ -1736,14 +1630,1211 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[3]/P",
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[3]/P",
+            "Text": "31 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                394.05320739746094,
+                517.7280731201172,
+                403.50823974609375
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                394.05320739746094,
+                517.7280731201172,
+                403.50823974609375
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    377.7769999999873,
+                    541.417999999976,
+                    411.97499999999127
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": [
+                    "Double",
+                    "Solid",
+                    "Solid",
+                    "Solid"
+                ],
+                "BorderThickness": [
+                    0.625,
+                    0.25,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 34.25,
+                "InlineAlign": "Start",
+                "RowIndex": 0,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                394.05320739746094,
+                517.7280731201172,
+                403.50823974609375
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                394.05320739746094,
+                517.7280731201172,
+                403.50823974609375
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR/TD[4]/P",
+            "Text": "$1457 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                360.5731964111328,
+                190.4951934814453,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                360.5731964111328,
+                190.4951934814453,
+                370.0282440185547
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    344.6579999999958,
+                    358.0649999999878,
+                    378.2569999999978
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                360.5731964111328,
+                190.4951934814453,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                360.5731964111328,
+                190.4951934814453,
+                370.0282440185547
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD/P",
+            "Text": "Handcrafted Fresh Pizza ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                360.5731964111328,
+                383.3751983642578,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                360.5731964111328,
+                383.3751983642578,
+                370.0282440185547
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    344.6579999999958,
+                    414.22299999999814,
+                    378.2569999999978
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 1,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                360.5731964111328,
+                383.3751983642578,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                360.5731964111328,
+                383.3751983642578,
+                370.0282440185547
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[2]/P",
+            "Text": "113 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                360.5731964111328,
+                434.86000061035156,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                360.5731964111328,
+                434.86000061035156,
+                370.0282440185547
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    344.6579999999958,
+                    481.8999999999942,
+                    378.2569999999978
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 2,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                360.5731964111328,
+                434.86000061035156,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                360.5731964111328,
+                434.86000061035156,
+                370.0282440185547
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[3]/P",
+            "Text": "71 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                360.5731964111328,
+                517.7280731201172,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                360.5731964111328,
+                517.7280731201172,
+                370.0282440185547
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    344.6579999999958,
+                    541.417999999976,
+                    378.2569999999978
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                360.5731964111328,
+                517.7280731201172,
+                370.0282440185547
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                360.5731964111328,
+                517.7280731201172,
+                370.0282440185547
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[2]/TD[4]/P",
+            "Text": "$8023 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                327.0632019042969,
+                176.49407958984375,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                327.0632019042969,
+                176.49407958984375,
+                336.5182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    310.09999999999127,
+                    358.0649999999878,
+                    345.13799999999173
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                327.0632019042969,
+                176.49407958984375,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                327.0632019042969,
+                176.49407958984375,
+                336.5182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD/P",
+            "Text": "Small Plastic Chicken ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                327.0632019042969,
+                383.3751983642578,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                327.0632019042969,
+                383.3751983642578,
+                336.5182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    310.09999999999127,
+                    414.22299999999814,
+                    345.13799999999173
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 1,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                327.0632019042969,
+                383.3751983642578,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                327.0632019042969,
+                383.3751983642578,
+                336.5182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[2]/P",
+            "Text": "100 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                327.0632019042969,
+                434.86000061035156,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                327.0632019042969,
+                434.86000061035156,
+                336.5182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    310.09999999999127,
+                    481.8999999999942,
+                    345.13799999999173
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 2,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                327.0632019042969,
+                434.86000061035156,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                327.0632019042969,
+                434.86000061035156,
+                336.5182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[3]/P",
+            "Text": "66 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                327.0632019042969,
+                517.7280731201172,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                327.0632019042969,
+                517.7280731201172,
+                336.5182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    310.09999999999127,
+                    541.417999999976,
+                    345.13799999999173
+                ],
+                "BlockAlign": "Middle",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                327.0632019042969,
+                517.7280731201172,
+                336.5182342529297
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                327.0632019042969,
+                517.7280731201172,
+                336.5182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[3]/TD[4]/P",
+            "Text": "$6600 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                293.5632019042969,
+                172.0286407470703,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                293.5632019042969,
+                172.0286407470703,
+                303.0182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    276.98099999999977,
+                    358.0649999999878,
+                    310.5799999999872
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 3,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                293.5632019042969,
+                172.0286407470703,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                293.5632019042969,
+                172.0286407470703,
+                303.0182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD/P",
+            "Text": "Licensed Cotton Ball ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                293.5632019042969,
+                378.3000030517578,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                293.5632019042969,
+                378.3000030517578,
+                303.0182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    276.98099999999977,
+                    414.22299999999814,
+                    310.5799999999872
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 1,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 3,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                293.5632019042969,
+                378.3000030517578,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                293.5632019042969,
+                378.3000030517578,
+                303.0182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[2]/P",
+            "Text": "97 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                293.5632019042969,
+                439.93519592285156,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                293.5632019042969,
+                439.93519592285156,
+                303.0182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    276.98099999999977,
+                    481.8999999999942,
+                    310.5799999999872
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 2,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 3,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                293.5632019042969,
+                439.93519592285156,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                293.5632019042969,
+                439.93519592285156,
+                303.0182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[3]/P",
+            "Text": "100 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                293.5632019042969,
+                517.7280731201172,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                293.5632019042969,
+                517.7280731201172,
+                303.0182342529297
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    276.98099999999977,
+                    541.417999999976,
+                    310.5799999999872
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 33.625,
+                "InlineAlign": "Start",
+                "RowIndex": 3,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                293.5632019042969,
+                517.7280731201172,
+                303.0182342529297
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                293.5632019042969,
+                517.7280731201172,
+                303.0182342529297
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[4]/TD[4]/P",
+            "Text": "$9700 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                260.0832061767578,
+                160.4971160888672,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                260.0832061767578,
+                160.4971160888672,
+                269.5382385253906
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    243.14199999999983,
+                    358.0649999999878,
+                    277.4609999999957
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 34.375,
+                "InlineAlign": "Start",
+                "RowIndex": 4,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                260.0832061767578,
+                160.4971160888672,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                260.0832061767578,
+                160.4971160888672,
+                269.5382385253906
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD/P",
+            "Text": "Small Granite Ball ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                260.0832061767578,
+                378.3000030517578,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                260.0832061767578,
+                378.3000030517578,
+                269.5382385253906
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    243.14199999999983,
+                    414.22299999999814,
+                    277.4609999999957
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 1,
+                "Height": 34.375,
+                "InlineAlign": "Start",
+                "RowIndex": 4,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                260.0832061767578,
+                378.3000030517578,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                260.0832061767578,
+                378.3000030517578,
+                269.5382385253906
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[2]/P",
+            "Text": "46 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                260.0832061767578,
+                434.86000061035156,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                260.0832061767578,
+                434.86000061035156,
+                269.5382385253906
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    243.14199999999983,
+                    481.8999999999942,
+                    277.4609999999957
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 2,
+                "Height": 34.375,
+                "InlineAlign": "Start",
+                "RowIndex": 4,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                260.0832061767578,
+                434.86000061035156,
+                269.5382385253906
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                260.0832061767578,
+                434.86000061035156,
+                269.5382385253906
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[3]/P",
             "Text": "54 ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -1753,24 +2844,24 @@ const jsonData = {
         {
             "Bounds": [
                 487.00999450683594,
-                394.05320739746094,
+                260.0832061767578,
                 517.7280731201172,
-                403.50823974609375
+                269.5382385253906
             ],
             "ClipBounds": [
                 487.00999450683594,
-                394.05320739746094,
+                260.0832061767578,
                 517.7280731201172,
-                403.50823974609375
+                269.5382385253906
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[4]",
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[4]",
             "attributes": {
                 "BBox": [
                     481.41999999999825,
-                    376.33699999999953,
+                    243.14199999999983,
                     541.417999999976,
-                    411.97499999999127
+                    277.4609999999957
                 ],
                 "BlockAlign": "Before",
                 "BorderColor": [
@@ -1780,30 +2871,30 @@ const jsonData = {
                 ],
                 "BorderStyle": "Solid",
                 "BorderThickness": [
-                    0.625,
+                    0.25,
                     0.25,
                     0.25,
                     0.5
                 ],
                 "ColIndex": 3,
-                "Height": 35.625,
+                "Height": 34.375,
                 "InlineAlign": "Start",
-                "RowIndex": 0,
+                "RowIndex": 4,
                 "Width": 60
             }
         },
         {
             "Bounds": [
                 487.00999450683594,
-                394.05320739746094,
+                260.0832061767578,
                 517.7280731201172,
-                403.50823974609375
+                269.5382385253906
             ],
             "ClipBounds": [
                 487.00999450683594,
-                394.05320739746094,
+                260.0832061767578,
                 517.7280731201172,
-                403.50823974609375
+                269.5382385253906
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -1813,15 +2904,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR/TD[4]/P",
-            "Text": "$3942 ",
+            "Path": "//Document/Sect[4]/Table[2]/TR[5]/TD[4]/P",
+            "Text": "$2484 ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -1830,24 +2921,322 @@ const jsonData = {
         {
             "Bounds": [
                 77.447998046875,
-                360.5731964111328,
-                167.1196746826172,
-                370.0282440185547
+                226.5832061767578,
+                170.0731201171875,
+                236.03823852539062
             ],
             "ClipBounds": [
                 77.447998046875,
-                360.5731964111328,
-                167.1196746826172,
-                370.0282440185547
+                226.5832061767578,
+                170.0731201171875,
+                236.03823852539062
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD",
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD",
             "attributes": {
                 "BBox": [
                     71.5170999999973,
-                    343.2179999999935,
+                    208.58399999999529,
                     358.0649999999878,
-                    376.81699999999546
+                    243.62199999999575
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 5,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                226.5832061767578,
+                170.0731201171875,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                226.5832061767578,
+                170.0731201171875,
+                236.03823852539062
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD/P",
+            "Text": "Rustic Concrete Hat ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                226.5832061767578,
+                378.3000030517578,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                226.5832061767578,
+                378.3000030517578,
+                236.03823852539062
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    208.58399999999529,
+                    414.22299999999814,
+                    243.62199999999575
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 1,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 5,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                226.5832061767578,
+                378.3000030517578,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                226.5832061767578,
+                378.3000030517578,
+                236.03823852539062
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[2]/P",
+            "Text": "97 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                226.5832061767578,
+                434.86000061035156,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                226.5832061767578,
+                434.86000061035156,
+                236.03823852539062
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    208.58399999999529,
+                    481.8999999999942,
+                    243.62199999999575
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": 0.25,
+                "ColIndex": 2,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 5,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                226.5832061767578,
+                434.86000061035156,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                226.5832061767578,
+                434.86000061035156,
+                236.03823852539062
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[3]/P",
+            "Text": "69 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                226.5832061767578,
+                517.7280731201172,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                226.5832061767578,
+                517.7280731201172,
+                236.03823852539062
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    208.58399999999529,
+                    541.417999999976,
+                    243.62199999999575
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.25,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 35,
+                "InlineAlign": "Start",
+                "RowIndex": 5,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                226.5832061767578,
+                517.7280731201172,
+                236.03823852539062
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                226.5832061767578,
+                517.7280731201172,
+                236.03823852539062
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[6]/TD[4]/P",
+            "Text": "$6693 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                193.0731964111328,
+                157.311767578125,
+                202.5282440185547
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                193.0731964111328,
+                157.311767578125,
+                202.5282440185547
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    175.4649999999965,
+                    358.0649999999878,
+                    209.0639999999985
                 ],
                 "BlockAlign": "Before",
                 "BorderColor": [
@@ -1865,22 +3254,22 @@ const jsonData = {
                 "ColIndex": 0,
                 "Height": 33.625,
                 "InlineAlign": "Start",
-                "RowIndex": 1,
+                "RowIndex": 6,
                 "Width": 286.375
             }
         },
         {
             "Bounds": [
                 77.447998046875,
-                360.5731964111328,
-                167.1196746826172,
-                370.0282440185547
+                193.0731964111328,
+                157.311767578125,
+                202.5282440185547
             ],
             "ClipBounds": [
                 77.447998046875,
-                360.5731964111328,
-                167.1196746826172,
-                370.0282440185547
+                193.0731964111328,
+                157.311767578125,
+                202.5282440185547
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -1890,15 +3279,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD/P",
-            "Text": "Sleek Granite Soap ",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD/P",
+            "Text": "Tasty Steel Chair ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -1907,24 +3296,24 @@ const jsonData = {
         {
             "Bounds": [
                 363.82000732421875,
-                360.5731964111328,
+                193.0731964111328,
                 378.3000030517578,
-                370.0282440185547
+                202.5282440185547
             ],
             "ClipBounds": [
                 363.82000732421875,
-                360.5731964111328,
+                193.0731964111328,
                 378.3000030517578,
-                370.0282440185547
+                202.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[2]",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[2]",
             "attributes": {
                 "BBox": [
                     357.58499999999185,
-                    343.2179999999935,
+                    175.4649999999965,
                     414.22299999999814,
-                    376.81699999999546
+                    209.0639999999985
                 ],
                 "BlockAlign": "Before",
                 "BorderColor": [
@@ -1937,22 +3326,22 @@ const jsonData = {
                 "ColIndex": 1,
                 "Height": 33.625,
                 "InlineAlign": "Start",
-                "RowIndex": 1,
+                "RowIndex": 6,
                 "Width": 56.625
             }
         },
         {
             "Bounds": [
                 363.82000732421875,
-                360.5731964111328,
+                193.0731964111328,
                 378.3000030517578,
-                370.0282440185547
+                202.5282440185547
             ],
             "ClipBounds": [
                 363.82000732421875,
-                360.5731964111328,
+                193.0731964111328,
                 378.3000030517578,
-                370.0282440185547
+                202.5282440185547
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -1962,384 +3351,14 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[2]/P",
-            "Text": "17 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                360.5731964111328,
-                434.86000061035156,
-                370.0282440185547
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                360.5731964111328,
-                434.86000061035156,
-                370.0282440185547
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[3]",
-            "attributes": {
-                "BBox": [
-                    413.74299999998766,
-                    343.2179999999935,
-                    481.8999999999942,
-                    376.81699999999546
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 2,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 1,
-                "Width": 68.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                360.5731964111328,
-                434.86000061035156,
-                370.0282440185547
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                360.5731964111328,
-                434.86000061035156,
-                370.0282440185547
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[3]/P",
-            "Text": "63 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                360.5731964111328,
-                517.7280731201172,
-                370.0282440185547
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                360.5731964111328,
-                517.7280731201172,
-                370.0282440185547
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[4]",
-            "attributes": {
-                "BBox": [
-                    481.41999999999825,
-                    343.2179999999935,
-                    541.417999999976,
-                    376.81699999999546
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.25,
-                    0.5
-                ],
-                "ColIndex": 3,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 1,
-                "Width": 60
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                360.5731964111328,
-                517.7280731201172,
-                370.0282440185547
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                360.5731964111328,
-                517.7280731201172,
-                370.0282440185547
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[2]/TD[4]/P",
-            "Text": "$1071 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                327.0632019042969,
-                178.61087036132812,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                327.0632019042969,
-                178.61087036132812,
-                336.5182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD",
-            "attributes": {
-                "BBox": [
-                    71.5170999999973,
-                    310.09999999999127,
-                    358.0649999999878,
-                    343.6979999999894
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.5,
-                    0.25
-                ],
-                "ColIndex": 0,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 2,
-                "Width": 286.375
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                327.0632019042969,
-                178.61087036132812,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                327.0632019042969,
-                178.61087036132812,
-                336.5182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD/P",
-            "Text": "Fantastic Soft Cheese ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                327.0632019042969,
-                378.3000030517578,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                327.0632019042969,
-                378.3000030517578,
-                336.5182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    357.58499999999185,
-                    310.09999999999127,
-                    414.22299999999814,
-                    343.6979999999894
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 1,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 2,
-                "Width": 56.625
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                327.0632019042969,
-                378.3000030517578,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                327.0632019042969,
-                378.3000030517578,
-                336.5182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[2]/P",
-            "Text": "36 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                327.0632019042969,
-                434.86000061035156,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                327.0632019042969,
-                434.86000061035156,
-                336.5182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[3]",
-            "attributes": {
-                "BBox": [
-                    413.74299999998766,
-                    310.09999999999127,
-                    481.8999999999942,
-                    343.6979999999894
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 2,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 2,
-                "Width": 68.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                327.0632019042969,
-                434.86000061035156,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                327.0632019042969,
-                434.86000061035156,
-                336.5182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[3]/P",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[2]/P",
             "Text": "78 ",
             "TextSize": 10.080001831054688,
             "attributes": {
@@ -2348,549 +3367,25 @@ const jsonData = {
         },
         {
             "Bounds": [
-                487.00999450683594,
-                327.0632019042969,
-                517.7280731201172,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                327.0632019042969,
-                517.7280731201172,
-                336.5182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[4]",
-            "attributes": {
-                "BBox": [
-                    481.41999999999825,
-                    310.09999999999127,
-                    541.417999999976,
-                    343.6979999999894
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.25,
-                    0.5
-                ],
-                "ColIndex": 3,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 2,
-                "Width": 60
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                327.0632019042969,
-                517.7280731201172,
-                336.5182342529297
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                327.0632019042969,
-                517.7280731201172,
-                336.5182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[3]/TD[4]/P",
-            "Text": "$2808 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                293.5632019042969,
-                180.80831909179688,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                293.5632019042969,
-                180.80831909179688,
-                303.0182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD",
-            "attributes": {
-                "BBox": [
-                    71.5170999999973,
-                    276.2609999999986,
-                    358.0649999999878,
-                    310.5799999999872
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.5,
-                    0.25
-                ],
-                "ColIndex": 0,
-                "Height": 34.375,
-                "InlineAlign": "Start",
-                "RowIndex": 3,
-                "Width": 286.375
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                293.5632019042969,
-                180.80831909179688,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                293.5632019042969,
-                180.80831909179688,
-                303.0182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD/P",
-            "Text": "Gorgeous Fresh Salad ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                293.5632019042969,
-                372.2267150878906,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                293.5632019042969,
-                372.2267150878906,
-                303.0182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    357.58499999999185,
-                    276.2609999999986,
-                    414.22299999999814,
-                    310.5799999999872
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 1,
-                "Height": 34.375,
-                "InlineAlign": "Start",
-                "RowIndex": 3,
-                "Width": 56.625
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                293.5632019042969,
-                372.2267150878906,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                293.5632019042969,
-                372.2267150878906,
-                303.0182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[2]/P",
-            "Text": "9 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
                 420.3800048828125,
-                293.5632019042969,
+                193.0731964111328,
                 434.86000061035156,
-                303.0182342529297
+                202.5282440185547
             ],
             "ClipBounds": [
                 420.3800048828125,
-                293.5632019042969,
+                193.0731964111328,
                 434.86000061035156,
-                303.0182342529297
+                202.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[3]",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[3]",
             "attributes": {
                 "BBox": [
                     413.74299999998766,
-                    276.2609999999986,
+                    175.4649999999965,
                     481.8999999999942,
-                    310.5799999999872
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 2,
-                "Height": 34.375,
-                "InlineAlign": "Start",
-                "RowIndex": 3,
-                "Width": 68.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                293.5632019042969,
-                434.86000061035156,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                293.5632019042969,
-                434.86000061035156,
-                303.0182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[3]/P",
-            "Text": "45 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                293.5632019042969,
-                512.3251953125,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                293.5632019042969,
-                512.3251953125,
-                303.0182342529297
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[4]",
-            "attributes": {
-                "BBox": [
-                    481.41999999999825,
-                    276.2609999999986,
-                    541.417999999976,
-                    310.5799999999872
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.25,
-                    0.5
-                ],
-                "ColIndex": 3,
-                "Height": 34.375,
-                "InlineAlign": "Start",
-                "RowIndex": 3,
-                "Width": 60
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                293.5632019042969,
-                512.3251953125,
-                303.0182342529297
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                293.5632019042969,
-                512.3251953125,
-                303.0182342529297
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[4]/TD[4]/P",
-            "Text": "$405 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                260.0832061767578,
-                159.95278930664062,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                260.0832061767578,
-                159.95278930664062,
-                269.5382385253906
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD",
-            "attributes": {
-                "BBox": [
-                    71.5170999999973,
-                    243.14199999999983,
-                    358.0649999999878,
-                    276.74099999999453
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.5,
-                    0.25
-                ],
-                "ColIndex": 0,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 4,
-                "Width": 286.375
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                260.0832061767578,
-                159.95278930664062,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                260.0832061767578,
-                159.95278930664062,
-                269.5382385253906
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD/P",
-            "Text": "Sleek Metal Pizza ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                260.0832061767578,
-                378.3000030517578,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                260.0832061767578,
-                378.3000030517578,
-                269.5382385253906
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    357.58499999999185,
-                    243.14199999999983,
-                    414.22299999999814,
-                    276.74099999999453
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 1,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 4,
-                "Width": 56.625
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                260.0832061767578,
-                378.3000030517578,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                260.0832061767578,
-                378.3000030517578,
-                269.5382385253906
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[2]/P",
-            "Text": "36 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                260.0832061767578,
-                434.86000061035156,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                260.0832061767578,
-                434.86000061035156,
-                269.5382385253906
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[3]",
-            "attributes": {
-                "BBox": [
-                    413.74299999998766,
-                    243.14199999999983,
-                    481.8999999999942,
-                    276.74099999999453
+                    209.0639999999985
                 ],
                 "BlockAlign": "Before",
                 "BorderColor": [
@@ -2902,612 +3397,6 @@ const jsonData = {
                 "BorderThickness": 0.25,
                 "ColIndex": 2,
                 "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 4,
-                "Width": 68.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                260.0832061767578,
-                434.86000061035156,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                260.0832061767578,
-                434.86000061035156,
-                269.5382385253906
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[3]/P",
-            "Text": "64 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                260.0832061767578,
-                517.7280731201172,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                260.0832061767578,
-                517.7280731201172,
-                269.5382385253906
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[4]",
-            "attributes": {
-                "BBox": [
-                    481.41999999999825,
-                    243.14199999999983,
-                    541.417999999976,
-                    276.74099999999453
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.25,
-                    0.5
-                ],
-                "ColIndex": 3,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 4,
-                "Width": 60
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                260.0832061767578,
-                517.7280731201172,
-                269.5382385253906
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                260.0832061767578,
-                517.7280731201172,
-                269.5382385253906
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[5]/TD[4]/P",
-            "Text": "$2304 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                226.5832061767578,
-                191.94671630859375,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                226.5832061767578,
-                191.94671630859375,
-                236.03823852539062
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD",
-            "attributes": {
-                "BBox": [
-                    71.5170999999973,
-                    210.0239999999976,
-                    358.0649999999878,
-                    243.62199999999575
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.5,
-                    0.25
-                ],
-                "ColIndex": 0,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 5,
-                "Width": 286.375
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                226.5832061767578,
-                191.94671630859375,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                226.5832061767578,
-                191.94671630859375,
-                236.03823852539062
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD/P",
-            "Text": "Ergonomic Rubber Salad ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                226.5832061767578,
-                378.3000030517578,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                226.5832061767578,
-                378.3000030517578,
-                236.03823852539062
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    357.58499999999185,
-                    210.0239999999976,
-                    414.22299999999814,
-                    243.62199999999575
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 1,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 5,
-                "Width": 56.625
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                226.5832061767578,
-                378.3000030517578,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                226.5832061767578,
-                378.3000030517578,
-                236.03823852539062
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[2]/P",
-            "Text": "42 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                226.5832061767578,
-                434.86000061035156,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                226.5832061767578,
-                434.86000061035156,
-                236.03823852539062
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[3]",
-            "attributes": {
-                "BBox": [
-                    413.74299999998766,
-                    210.0239999999976,
-                    481.8999999999942,
-                    243.62199999999575
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": 0.25,
-                "ColIndex": 2,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 5,
-                "Width": 68.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                226.5832061767578,
-                434.86000061035156,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                226.5832061767578,
-                434.86000061035156,
-                236.03823852539062
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[3]/P",
-            "Text": "99 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                226.5832061767578,
-                517.7280731201172,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                226.5832061767578,
-                517.7280731201172,
-                236.03823852539062
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[4]",
-            "attributes": {
-                "BBox": [
-                    481.41999999999825,
-                    210.0239999999976,
-                    541.417999999976,
-                    243.62199999999575
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.25,
-                    0.25,
-                    0.5
-                ],
-                "ColIndex": 3,
-                "Height": 33.625,
-                "InlineAlign": "Start",
-                "RowIndex": 5,
-                "Width": 60
-            }
-        },
-        {
-            "Bounds": [
-                487.00999450683594,
-                226.5832061767578,
-                517.7280731201172,
-                236.03823852539062
-            ],
-            "ClipBounds": [
-                487.00999450683594,
-                226.5832061767578,
-                517.7280731201172,
-                236.03823852539062
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[6]/TD[4]/P",
-            "Text": "$4158 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                193.0731964111328,
-                195.95855712890625,
-                202.5282440185547
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                193.0731964111328,
-                195.95855712890625,
-                202.5282440185547
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD",
-            "attributes": {
-                "BBox": [
-                    71.5170999999973,
-                    175.10499999999593,
-                    358.0649999999878,
-                    210.50399999999354
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.625,
-                    0.5,
-                    0.25
-                ],
-                "ColIndex": 0,
-                "Height": 35.375,
-                "InlineAlign": "Start",
-                "RowIndex": 6,
-                "Width": 286.375
-            }
-        },
-        {
-            "Bounds": [
-                77.447998046875,
-                193.0731964111328,
-                195.95855712890625,
-                202.5282440185547
-            ],
-            "ClipBounds": [
-                77.447998046875,
-                193.0731964111328,
-                195.95855712890625,
-                202.5282440185547
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD/P",
-            "Text": "Handmade Concrete Shirt ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                193.0731964111328,
-                383.3751983642578,
-                202.5282440185547
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                193.0731964111328,
-                383.3751983642578,
-                202.5282440185547
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[2]",
-            "attributes": {
-                "BBox": [
-                    357.58499999999185,
-                    175.10499999999593,
-                    414.22299999999814,
-                    210.50399999999354
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.625,
-                    0.25,
-                    0.25
-                ],
-                "ColIndex": 1,
-                "Height": 35.375,
-                "InlineAlign": "Start",
-                "RowIndex": 6,
-                "Width": 56.625
-            }
-        },
-        {
-            "Bounds": [
-                363.82000732421875,
-                193.0731964111328,
-                383.3751983642578,
-                202.5282440185547
-            ],
-            "ClipBounds": [
-                363.82000732421875,
-                193.0731964111328,
-                383.3751983642578,
-                202.5282440185547
-            ],
-            "Font": {
-                "alt_family_name": "Arial",
-                "embedded": true,
-                "encoding": "WinAnsiEncoding",
-                "family_name": "Arial MT",
-                "font_type": "TrueType",
-                "italic": false,
-                "monospaced": false,
-                "name": "EINEIP+ArialMT",
-                "subset": true,
-                "weight": 400
-            },
-            "HasClip": true,
-            "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[2]/P",
-            "Text": "130 ",
-            "TextSize": 10.080001831054688,
-            "attributes": {
-                "LineHeight": 12.125
-            }
-        },
-        {
-            "Bounds": [
-                420.3800048828125,
-                193.0731964111328,
-                434.86000061035156,
-                202.5282440185547
-            ],
-            "ClipBounds": [
-                420.3800048828125,
-                193.0731964111328,
-                434.86000061035156,
-                202.5282440185547
-            ],
-            "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[3]",
-            "attributes": {
-                "BBox": [
-                    413.74299999998766,
-                    175.10499999999593,
-                    481.8999999999942,
-                    210.50399999999354
-                ],
-                "BlockAlign": "Before",
-                "BorderColor": [
-                    0,
-                    0,
-                    0
-                ],
-                "BorderStyle": "Solid",
-                "BorderThickness": [
-                    0.25,
-                    0.625,
-                    0.25,
-                    0.25
-                ],
-                "ColIndex": 2,
-                "Height": 35.375,
                 "InlineAlign": "Start",
                 "RowIndex": 6,
                 "Width": 68.125
@@ -3534,15 +3423,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[3]/P",
-            "Text": "35 ",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[3]/P",
+            "Text": "20 ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -3562,13 +3451,13 @@ const jsonData = {
                 202.5282440185547
             ],
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[4]",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[4]",
             "attributes": {
                 "BBox": [
                     481.41999999999825,
-                    175.10499999999593,
+                    175.4649999999965,
                     541.417999999976,
-                    210.50399999999354
+                    209.0639999999985
                 ],
                 "BlockAlign": "Before",
                 "BorderColor": [
@@ -3579,12 +3468,12 @@ const jsonData = {
                 "BorderStyle": "Solid",
                 "BorderThickness": [
                     0.25,
-                    0.625,
+                    0.25,
                     0.25,
                     0.5
                 ],
                 "ColIndex": 3,
-                "Height": 35.375,
+                "Height": 33.625,
                 "InlineAlign": "Start",
                 "RowIndex": 6,
                 "Width": 60
@@ -3611,15 +3500,15 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 0,
-            "Path": "//Document/Sect[2]/Table[3]/TR[7]/TD[4]/P",
-            "Text": "$4550 ",
+            "Path": "//Document/Sect[4]/Table[2]/TR[7]/TD[4]/P",
+            "Text": "$1560 ",
             "TextSize": 10.080001831054688,
             "attributes": {
                 "LineHeight": 12.125
@@ -3628,15 +3517,381 @@ const jsonData = {
         {
             "Bounds": [
                 77.447998046875,
-                113.13319396972656,
+                159.59320068359375,
+                160.36607360839844,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                159.59320068359375,
+                160.36607360839844,
+                169.04823303222656
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD",
+            "attributes": {
+                "BBox": [
+                    71.5170999999973,
+                    141.74599999999919,
+                    358.0649999999878,
+                    175.9449999999997
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.625,
+                    0.5,
+                    0.25
+                ],
+                "ColIndex": 0,
+                "Height": 34.25,
+                "InlineAlign": "Start",
+                "RowIndex": 7,
+                "Width": 286.375
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                159.59320068359375,
+                160.36607360839844,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                159.59320068359375,
+                160.36607360839844,
+                169.04823303222656
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD/P",
+            "Text": "Refined Metal Hat ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                159.59320068359375,
+                378.3000030517578,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                159.59320068359375,
+                378.3000030517578,
+                169.04823303222656
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    357.58499999999185,
+                    141.74599999999919,
+                    414.22299999999814,
+                    175.9449999999997
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.625,
+                    0.25,
+                    0.25
+                ],
+                "ColIndex": 1,
+                "Height": 34.25,
+                "InlineAlign": "Start",
+                "RowIndex": 7,
+                "Width": 56.625
+            }
+        },
+        {
+            "Bounds": [
+                363.82000732421875,
+                159.59320068359375,
+                378.3000030517578,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                363.82000732421875,
+                159.59320068359375,
+                378.3000030517578,
+                169.04823303222656
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[2]/P",
+            "Text": "57 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                159.59320068359375,
+                434.86000061035156,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                159.59320068359375,
+                434.86000061035156,
+                169.04823303222656
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[3]",
+            "attributes": {
+                "BBox": [
+                    413.74299999998766,
+                    141.74599999999919,
+                    481.8999999999942,
+                    175.9449999999997
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.625,
+                    0.25,
+                    0.25
+                ],
+                "ColIndex": 2,
+                "Height": 34.25,
+                "InlineAlign": "Start",
+                "RowIndex": 7,
+                "Width": 68.125
+            }
+        },
+        {
+            "Bounds": [
+                420.3800048828125,
+                159.59320068359375,
+                434.86000061035156,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                420.3800048828125,
+                159.59320068359375,
+                434.86000061035156,
+                169.04823303222656
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[3]/P",
+            "Text": "23 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                159.59320068359375,
+                517.7280731201172,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                159.59320068359375,
+                517.7280731201172,
+                169.04823303222656
+            ],
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[4]",
+            "attributes": {
+                "BBox": [
+                    481.41999999999825,
+                    141.74599999999919,
+                    541.417999999976,
+                    175.9449999999997
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    0,
+                    0,
+                    0
+                ],
+                "BorderStyle": "Solid",
+                "BorderThickness": [
+                    0.25,
+                    0.625,
+                    0.25,
+                    0.5
+                ],
+                "ColIndex": 3,
+                "Height": 34.25,
+                "InlineAlign": "Start",
+                "RowIndex": 7,
+                "Width": 60
+            }
+        },
+        {
+            "Bounds": [
+                487.00999450683594,
+                159.59320068359375,
+                517.7280731201172,
+                169.04823303222656
+            ],
+            "ClipBounds": [
+                487.00999450683594,
+                159.59320068359375,
+                517.7280731201172,
+                169.04823303222656
+            ],
+            "Font": {
+                "alt_family_name": "Arial",
+                "embedded": true,
+                "encoding": "WinAnsiEncoding",
+                "family_name": "Arial MT",
+                "font_type": "TrueType",
+                "italic": false,
+                "monospaced": false,
+                "name": "EXFVMQ+ArialMT",
+                "subset": true,
+                "weight": 400
+            },
+            "HasClip": true,
+            "Lang": "en",
+            "Page": 0,
+            "Path": "//Document/Sect[4]/Table[2]/TR[8]/TD[4]/P",
+            "Text": "$1311 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                563.5700073242188,
+                526.1329956054688,
+                706.0482330322266
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                563.5700073242188,
+                526.1329956054688,
+                706.0482330322266
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]",
+            "attributes": {
+                "BBox": [
+                    71.99709999999686,
+                    563.4089999999851,
+                    540.6979999999749,
+                    704.4039999999804
+                ],
+                "NumCol": 2,
+                "NumRow": 3,
+                "Placement": "Block",
+                "SpaceAfter": 11.25
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                696.5932006835938,
                 120.4593505859375,
-                122.58824157714844
+                706.0482330322266
             ],
             "ClipBounds": [
                 77.447998046875,
-                113.13319396972656,
+                696.5932006835938,
                 120.4593505859375,
-                122.58824157714844
+                706.0482330322266
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR/TD",
+            "attributes": {
+                "BBox": [
+                    71.99709999999686,
+                    679.6849999999977,
+                    480.2199999999866,
+                    704.4039999999804
+                ],
+                "BlockAlign": "Before",
+                "ColIndex": 0,
+                "Height": 24.75,
+                "InlineAlign": "Start",
+                "RowIndex": 0,
+                "Width": 408.25
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                696.5932006835938,
+                120.4593505859375,
+                706.0482330322266
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                696.5932006835938,
+                120.4593505859375,
+                706.0482330322266
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3646,32 +3901,62 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/P[2]",
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR/TD/P",
             "Text": "Subtotal ",
             "TextSize": 10.080001831054688,
             "attributes": {
-                "SpaceAfter": 18
+                "LineHeight": 12.125
             }
         },
         {
             "Bounds": [
                 485.92999267578125,
-                113.13319396972656,
+                696.5932006835938,
                 522.3792724609375,
-                122.58824157714844
+                706.0482330322266
             ],
             "ClipBounds": [
                 485.92999267578125,
-                113.13319396972656,
+                696.5932006835938,
                 522.3792724609375,
-                122.58824157714844
+                706.0482330322266
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR/TD[2]",
+            "attributes": {
+                "BBox": [
+                    480.2199999999866,
+                    679.6849999999977,
+                    540.6979999999749,
+                    704.4039999999804
+                ],
+                "BlockAlign": "Before",
+                "ColIndex": 1,
+                "Height": 24.75,
+                "InlineAlign": "Start",
+                "RowIndex": 0,
+                "Width": 60.5
+            }
+        },
+        {
+            "Bounds": [
+                485.92999267578125,
+                696.5932006835938,
+                522.3792724609375,
+                706.0482330322266
+            ],
+            "ClipBounds": [
+                485.92999267578125,
+                696.5932006835938,
+                522.3792724609375,
+                706.0482330322266
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3681,29 +3966,84 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
-            "Page": 0,
-            "Path": "//Document/Sect[2]/P[3]",
-            "Text": "$19238 ",
-            "TextSize": 10.080001831054688
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR/TD[2]/P",
+            "Text": "$37828 ",
+            "TextSize": 10.080001831054688,
+            "attributes": {
+                "LineHeight": 12.125
+            }
         },
         {
             "Bounds": [
                 77.447998046875,
-                702.3531951904297,
+                663.1132049560547,
                 109.73143005371094,
-                711.8082427978516
+                672.5682373046875
             ],
             "ClipBounds": [
                 77.447998046875,
-                702.3531951904297,
+                663.1132049560547,
                 109.73143005371094,
-                711.8082427978516
+                672.5682373046875
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR[2]/TD",
+            "attributes": {
+                "BBox": [
+                    71.99709999999686,
+                    625.3269999999902,
+                    480.2199999999866,
+                    679.6849999999977
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    null,
+                    [
+                        0.6235349999999755,
+                        0.6235349999999755,
+                        0.6235349999999755
+                    ],
+                    null,
+                    null
+                ],
+                "BorderStyle": [
+                    "None",
+                    "Solid",
+                    "None",
+                    "None"
+                ],
+                "BorderThickness": [
+                    0,
+                    0.375,
+                    0,
+                    0
+                ],
+                "ColIndex": 0,
+                "Height": 54.375,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 408.25
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                663.1132049560547,
+                109.73143005371094,
+                672.5682373046875
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                663.1132049560547,
+                109.73143005371094,
+                672.5682373046875
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3713,32 +4053,84 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 1,
-            "Path": "//Document/Sect[2]/P[4]",
+            "Path": "//Document/Sect[4]/Table[3]/TR[2]/TD/P",
             "Text": "Tax % ",
             "TextSize": 10.080001831054688,
             "attributes": {
-                "SpaceAfter": 9
+                "LineHeight": 12.125
             }
         },
         {
             "Bounds": [
                 485.92999267578125,
-                702.3531951904297,
+                663.1132049560547,
                 500.4100036621094,
-                711.8082427978516
+                672.5682373046875
             ],
             "ClipBounds": [
                 485.92999267578125,
-                702.3531951904297,
+                663.1132049560547,
                 500.4100036621094,
-                711.8082427978516
+                672.5682373046875
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR[2]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    480.2199999999866,
+                    625.3269999999902,
+                    540.6979999999749,
+                    679.6849999999977
+                ],
+                "BlockAlign": "Before",
+                "BorderColor": [
+                    null,
+                    [
+                        0.6235349999999755,
+                        0.6235349999999755,
+                        0.6235349999999755
+                    ],
+                    null,
+                    null
+                ],
+                "BorderStyle": [
+                    "None",
+                    "Solid",
+                    "None",
+                    "None"
+                ],
+                "BorderThickness": [
+                    0,
+                    0.375,
+                    0,
+                    0
+                ],
+                "ColIndex": 1,
+                "Height": 54.375,
+                "InlineAlign": "Start",
+                "RowIndex": 1,
+                "Width": 60.5
+            }
+        },
+        {
+            "Bounds": [
+                485.92999267578125,
+                663.1132049560547,
+                500.4100036621094,
+                672.5682373046875
+            ],
+            "ClipBounds": [
+                485.92999267578125,
+                663.1132049560547,
+                500.4100036621094,
+                672.5682373046875
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3748,32 +4140,84 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 1,
-            "Path": "//Document/Sect[2]/P[5]",
+            "Path": "//Document/Sect[4]/Table[3]/TR[2]/TD[2]/P",
             "Text": "10 ",
             "TextSize": 10.080001831054688,
             "attributes": {
-                "SpaceAfter": 9
+                "LineHeight": 12.125
             }
         },
         {
             "Bounds": [
                 77.447998046875,
-                605.1031951904297,
+                565.8632049560547,
                 126.14447021484375,
-                614.5582427978516
+                575.3182373046875
             ],
             "ClipBounds": [
                 77.447998046875,
-                605.1031951904297,
+                565.8632049560547,
                 126.14447021484375,
-                614.5582427978516
+                575.3182373046875
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR[3]/TD",
+            "attributes": {
+                "BBox": [
+                    71.99709999999686,
+                    563.4089999999851,
+                    480.2199999999866,
+                    626.1669999999867
+                ],
+                "BlockAlign": "After",
+                "BorderColor": [
+                    [
+                        0.6235349999999755,
+                        0.6235349999999755,
+                        0.6235349999999755
+                    ],
+                    null,
+                    null,
+                    null
+                ],
+                "BorderStyle": [
+                    "Solid",
+                    "None",
+                    "None",
+                    "None"
+                ],
+                "BorderThickness": [
+                    0.375,
+                    0,
+                    0,
+                    0
+                ],
+                "ColIndex": 0,
+                "Height": 62.75,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 408.25
+            }
+        },
+        {
+            "Bounds": [
+                77.447998046875,
+                565.8632049560547,
+                126.14447021484375,
+                575.3182373046875
+            ],
+            "ClipBounds": [
+                77.447998046875,
+                565.8632049560547,
+                126.14447021484375,
+                575.3182373046875
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3783,32 +4227,84 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "VKZCMH+Arial-BoldMT",
+                "name": "UAHNCK+Arial-BoldMT",
                 "subset": true,
                 "weight": 700
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 1,
-            "Path": "//Document/Sect[2]/P[6]",
+            "Path": "//Document/Sect[4]/Table[3]/TR[3]/TD/P",
             "Text": "Total Due ",
             "TextSize": 10.080001831054688,
             "attributes": {
-                "SpaceAfter": 9
+                "LineHeight": 12.125
             }
         },
         {
             "Bounds": [
                 485.92999267578125,
-                602.8099975585938,
+                563.5700073242188,
                 526.1329956054688,
-                611.2519989013672
+                572.0119934082031
             ],
             "ClipBounds": [
                 485.92999267578125,
-                602.8099975585938,
+                563.5700073242188,
                 526.1329956054688,
-                611.2519989013672
+                572.0119934082031
+            ],
+            "Page": 1,
+            "Path": "//Document/Sect[4]/Table[3]/TR[3]/TD[2]",
+            "attributes": {
+                "BBox": [
+                    480.2199999999866,
+                    563.4089999999851,
+                    540.6979999999749,
+                    626.1669999999867
+                ],
+                "BlockAlign": "After",
+                "BorderColor": [
+                    [
+                        0.6235349999999755,
+                        0.6235349999999755,
+                        0.6235349999999755
+                    ],
+                    null,
+                    null,
+                    null
+                ],
+                "BorderStyle": [
+                    "Solid",
+                    "None",
+                    "None",
+                    "None"
+                ],
+                "BorderThickness": [
+                    0.375,
+                    0,
+                    0,
+                    0
+                ],
+                "ColIndex": 1,
+                "Height": 62.75,
+                "InlineAlign": "Start",
+                "RowIndex": 2,
+                "Width": 60.5
+            }
+        },
+        {
+            "Bounds": [
+                485.92999267578125,
+                563.5700073242188,
+                526.1329956054688,
+                572.0119934082031
+            ],
+            "ClipBounds": [
+                485.92999267578125,
+                563.5700073242188,
+                526.1329956054688,
+                572.0119934082031
             ],
             "Font": {
                 "alt_family_name": "Arial",
@@ -3818,19 +4314,18 @@ const jsonData = {
                 "font_type": "TrueType",
                 "italic": false,
                 "monospaced": false,
-                "name": "EINEIP+ArialMT",
+                "name": "EXFVMQ+ArialMT",
                 "subset": true,
                 "weight": 400
             },
             "HasClip": true,
             "Lang": "en",
             "Page": 1,
-            "Path": "//Document/Sect[2]/P[7]",
-            "Text": "$21161.8 ",
+            "Path": "//Document/Sect[4]/Table[3]/TR[3]/TD[2]/P",
+            "Text": "$41610.8 ",
             "TextSize": 9,
             "attributes": {
-                "LineHeight": 10.75,
-                "TextAlign": "End"
+                "LineHeight": 10.75
             }
         }
     ],
@@ -3882,3 +4377,4 @@ const jsonData = {
 
 let parser=new Parser();
 parser.parseApiResponse(jsonData);
+console.log(parser.collectiveParsedReponse);
