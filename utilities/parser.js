@@ -11,17 +11,17 @@ class Parser{
 
     // Funciton for taking out relevant info from API response JSON
     parseApiResponse(json) {
-        let businessName="";
-        let businessDescription="";
-        let invoiceDueDate;
-        let itemTableData=[];
-        let invoiceTax=10;
+        let businessName=""; // Stores business Name
+        let businessDescription=""; // Stores business description
+        let invoiceDueDate; // Store due date of invoice
+        let itemTableData=[]; // Stores the list of bill items for conversion into JSON
+        let invoiceTax=10; // Stores tax %. NOTE: This is not hardcoded value but just initial value. Logic is present from line 84
 
-        let customerDetailsString="";
-        let invoiceDescriptionString="";
+        let customerDetailsString=""; // Stores the string under the "BILL TO" section of the pdf
+        let invoiceDescriptionString=""; // Stores the string undet the "DETAILS" section of the pdf
 
-        let businessAddressText="";
-        let invoiceNumberAndIssueDateString="";
+        let businessAddressText=""; // Stores the business address as a combined string for parsing input
+        let invoiceNumberAndIssueDateString=""; // Store the combined string having invoice no and issue date
 
         // Index representing traversal position
         let i=0;
@@ -36,10 +36,11 @@ class Parser{
             i++;
         } 
 
+        // Title is the business name
         businessName=json.elements[i].Text.trim();
         i++
 
-        // searching for bussiness decription
+        // move until we get the string "BILL TO"
         while(i<json.elements.length){
             if(json.elements[i].Text === "BILL TO ") break;
             if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT"){
@@ -47,8 +48,10 @@ class Parser{
             }
             i++;
         }
+        // The text between title and "BILL TO" us business description
         businessDescription=businessDescription.trim();
 
+        // move the string "AMOUNT" is found
         while(i<json.elements.length){
             if(json.elements[i].Text === "AMOUNT ") break;
             if(json.elements[i].Text !== undefined && json.elements[i].Text.startsWith("Due date:")){
@@ -60,10 +63,10 @@ class Parser{
                 invoiceDueDate=dueDateString;
             }
             else if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT"){
-                if(json.elements[i].Bounds[0]<100){
+                if(json.elements[i].Bounds[0]<100){ // The left column
                     customerDetailsString+=json.elements[i].Text;
                 }
-                else if(json.elements[i].Bounds[0]>100 && json.elements[i].Bounds[0]<300){
+                else if(json.elements[i].Bounds[0]>100 && json.elements[i].Bounds[0]<300){ // The right Column
                     invoiceDescriptionString+=json.elements[i].Text;
                 }
 
@@ -71,9 +74,10 @@ class Parser{
             }
             i++;
         }
+        // Remove the string "DETAILS " from invoice description if present
         invoiceDescriptionString=invoiceDescriptionString.replace("DETAILS ","");
-        console.log(invoiceDescriptionString);
 
+        // Move until you find a sting beginning with "Subtotal". This is done to get the table data
         while(i<json.elements.length){
             if(json.elements[i].Text!==undefined && json.elements[i].Text.startsWith("Subtotal")) break;
             if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT")
@@ -81,6 +85,7 @@ class Parser{
             i++;
         }
 
+        // Move until the end to get the tax %
         while(i<json.elements.length){
             if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT"){
                 let str=json.elements[i].Text;
@@ -94,7 +99,7 @@ class Parser{
 
         
 
-
+        // Using the some of the above strings and parsing functions in helper module to get data in desired form
         let parsedBillItemDetails=parsingHelpers.parseBillItemDetails(itemTableData);
         let parsedCustomerDetails=parsingHelpers.parseCustomerDetails(customerDetailsString);
         let parsedInvoiceNumberAndIssueDate=parsingHelpers.parseInvoiceNumberAndIssueDate(invoiceNumberAndIssueDateString);

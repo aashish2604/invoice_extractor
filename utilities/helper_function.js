@@ -1,3 +1,4 @@
+// Function to get parse the combined address string to a JSON
 function parseBusinessAddress(address) {
   let splittedArray = address.split(",");
 
@@ -24,6 +25,7 @@ function parseBusinessAddress(address) {
   return responseJson;
 }
 
+// Function to parse the Invoice Number and date from combined string to JSON
 function parseInvoiceNumberAndIssueDate(data) {
   data = data.replace("Invoice# ", "");
   data = data.replace("Issue date ", "");
@@ -39,6 +41,7 @@ function parseInvoiceNumberAndIssueDate(data) {
   };
 }
 
+// Function to parse the bill details items from a List to a JSON
 function parseBillItemDetails(data) {
   let i = 0;
   let billItemDetailsJson = [];
@@ -54,6 +57,7 @@ function parseBillItemDetails(data) {
   return billItemDetailsJson;
 }
 
+// Function to parse the customer details from a string to a JSON
 function parseCustomerDetails(data) {
   let name = "";
   let email = "";
@@ -88,6 +92,7 @@ function parseCustomerDetails(data) {
   };
 }
 
+// Function to sort the file names of input directory
 function sortFileNames(strings) {
     const numericSort = (a, b) => {
       const numericA = parseInt(a.match(/\d+/)[0]);
