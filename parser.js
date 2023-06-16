@@ -37,7 +37,7 @@ function parseInvoiceNumberAndIssueDate(data){
     let invoiceNumber=dataArray.pop().trim();
     return {
         "invoiceNumber": invoiceNumber,
-        "issueDate": issueDate
+        "issueDate": issueDateString
     };
 
 }
@@ -65,6 +65,7 @@ function parseCustomerDetails(data){
     let addressLine1="";
     let addressLine2="";
 
+    data.replace("BILL TO ","");
     let dataArray=data.split(" ");
     let i=0;
     while(!(dataArray[i].includes("@"))){
@@ -150,8 +151,9 @@ class Parser{
                 
                 let dueDateString = json.elements[i].Text.trim();
                 dueDateString = dueDateString.replace("Due date:","").trim();
-                let dateParts=dueDateString.split("-");
-                invoiceDueDate = new Date(dateParts[2], (dateParts[1] - 1), dateParts[0]);
+                // let dateParts=dueDateString.split("-");
+                // invoiceDueDate = new Date(dateParts[2], (dateParts[1] - 1), dateParts[0]);
+                invoiceDueDate=dueDateString;
             }
             else if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT"){
                 if(json.elements[i].Bounds[0]<100){
@@ -165,6 +167,7 @@ class Parser{
             }
             i++;
         }
+        invoiceDescriptionString.replace("DETAILS ","");
 
         while(i<json.elements.length){
             if(json.elements[i].Font!== undefined && json.elements[i].Font.family_name === "Arial MT")
@@ -183,26 +186,26 @@ class Parser{
 
         // Contains data for all the fields before the item wise bill details of invoice
         let responseFragment1={
-          bussiness_city: parsedBusinessAddress.city,
-          bussiness_country: parsedBusinessAddress.country,
-          businessDescription: businessDescription.trim(),
-          businessName: businessName,
-          business_street: parsedBusinessAddress.street,
-          business_zipcode: parsedBusinessAddress.zipcode,
-          customerAddressLine1: parsedCustomerDetails.addressLine1,
-          customerAddressLine2: parsedCustomerDetails.addressLine2,
-          customerEmail: parsedCustomerDetails.email,
-          customerName: parsedCustomerDetails.name,
-          customerPhoneNo: parsedCustomerDetails.phoneNo,
+            Bussiness__City: parsedBusinessAddress.city,
+            Bussiness__Country: parsedBusinessAddress.country,
+            Bussiness__Description: businessDescription.trim(),
+            Bussiness__Name: businessName,
+            Bussiness__StreetAddress: parsedBusinessAddress.street,
+            Bussiness__Zipcode: parsedBusinessAddress.zipcode,
+            Customer__Address__line1: parsedCustomerDetails.addressLine1,
+            Customer__Address__line2: parsedCustomerDetails.addressLine2,
+            Customer__Email: parsedCustomerDetails.email,
+            Customer__Name: parsedCustomerDetails.name,
+            Customer__PhoneNumber: parsedCustomerDetails.phoneNo,
         }
 
         // Contains data for all the fields after the item wise bill details of invoice 
         let responesFragment2={
-          invoiceDescription: invoiceDescriptionString.trim(),
-          invoiceDueDate: invoiceDueDate,
-          invoiceIssueDate: parsedInvoiceNumberAndIssueDate.issueDate,
-          invoiceNumber: parsedInvoiceNumberAndIssueDate.invoiceNumber,
-          invoiceTax: invoiceTax,
+            Invoice__Description: invoiceDescriptionString.trim(),
+            Invoice__DueDate: invoiceDueDate,
+            Invoice__IssueDate: parsedInvoiceNumberAndIssueDate.issueDate,
+            Invoice__Number: parsedInvoiceNumberAndIssueDate.invoiceNumber,
+            Invoice__Tax: invoiceTax,
         }
 
         // NOTE: The fragments above are the properties common for all the items in the invoice
@@ -223,9 +226,6 @@ class Parser{
 }
 
 module.exports = Parser;
-
-
-
 
 
 // const jsonData = {

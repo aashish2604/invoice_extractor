@@ -1,8 +1,6 @@
 
 
-function convertJSONtoCSV(jsonData) {
-    // Parse JSON data into an array of objects
-    const data = JSON.parse(jsonData);
+function convertJSONtoCSV(data) {
   
     // Extract column names/headers
     const columns = Object.keys(data[0]);
@@ -22,13 +20,16 @@ function convertJSONtoCSV(jsonData) {
   
     return csvData;
   }
+
+  module.exports= convertJSONtoCSV;
+  // const date=new Date("06-06-2023");
   
-  // Example JSON data
-  const jsonData = '[{"name": "John", "age": 30, "city": "New York"}, {"name": "Jane", "age": 25, "city": "London"}]';
+  // // Example JSON data
+  // const jsonData = [{"name": "John", "age": 30, "city": "New York","date": date}, {"name": "Jane", "age": 25, "city": "London","date": date}];
   
-  // Convert JSON to CSV
-  const csvData = convertJSONtoCSV(jsonData);
+  // // Convert JSON to CSV
+  // const csvData = convertJSONtoCSV(jsonData);
   
-  // Print the resulting CSV data
-  console.log(csvData);
+  // // Print the resulting CSV data
+  // console.log(csvData);
   
