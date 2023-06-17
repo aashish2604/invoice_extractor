@@ -1,3 +1,6 @@
+# TASK STATUS
+The input data set of the problem statement in present in "inputs" and its corresponding output is present in "outputs/ExtractedData.csv". The api responses for each file is present in "outputs/api_response".
+
 # NODE MODULES USED
 Adobe extract Api
 ```javascript
