@@ -38,5 +38,4 @@ Wait for the output generation. You may see file wise progress in the terminal a
 
 ### Step 4
 View the final CSV file in "outputs/ExtractedData.csv".
-You can also see the API response for each input file in "/outputs/api_response".
 
