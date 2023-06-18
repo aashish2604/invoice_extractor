@@ -22,7 +22,7 @@ NOTE - A nodes of version greater than V14 is required to run this project.
 The node modules are included in the respository.
 
 ### Step 0
-Empty the directory "/outputs/api_response" .\
+Empty the directory "/outputs/api_response". **NOTE:** Do not delete the whole "outputs" folder.\
 This is not a necessary step but you are insisted to do this if your input file names are clashing with the ones already present here. If this condition arises then the new output zip file for that particular input will replace the existing one.\
 However this won't have any undesirable affect on the final CSV.
 
